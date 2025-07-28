@@ -46,6 +46,42 @@ Your GitHub repository should:
 2. Include a zip file in each release containing the theme files
 3. Have proper theme structure (style.css, index.php, etc.)
 
+### Supported Archive Structures
+
+The plugin supports multiple archive structures:
+
+**Option 1: Theme files in root**
+```
+theme.zip
+├── style.css
+├── index.php
+├── functions.php
+└── ...other theme files
+```
+
+**Option 2: Theme files in subdirectory (most common for GitHub)**
+```
+theme.zip
+└── theme-name/
+    ├── style.css
+    ├── index.php
+    ├── functions.php
+    └── ...other theme files
+```
+
+**Option 3: Nested structure**
+```
+theme.zip
+└── repository-name/
+    └── theme-folder/
+        ├── style.css
+        ├── index.php
+        ├── functions.php
+        └── ...other theme files
+```
+
+The plugin automatically detects the correct theme directory by looking for required files (`style.css` and `index.php`) and validates that `style.css` contains the WordPress theme header.
+
 ## Token Permissions
 
 ### For Public Repositories

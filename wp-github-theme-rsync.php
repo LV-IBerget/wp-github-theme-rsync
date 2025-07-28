@@ -164,7 +164,7 @@ class WP_GitHub_Theme_Rsync {
             // Calculate MD5 of current theme
             $current_md5 = $this->calculate_theme_md5($settings['target_theme']);
             
-            // Download and calculate MD5 of new theme
+            // Download and extract to temporary location for MD5 calculation
             $temp_file = $this->download_release($download_url, $settings['github_token']);
             if (!$temp_file) {
                 return array(
@@ -173,7 +173,15 @@ class WP_GitHub_Theme_Rsync {
                 );
             }
             
-            $new_md5 = md5_file($temp_file);
+            // Calculate MD5 of new theme by extracting and analyzing
+            $new_md5 = $this->calculate_downloaded_theme_md5($temp_file);
+            if (!$new_md5) {
+                unlink($temp_file);
+                return array(
+                    'success' => false,
+                    'message' => 'Failed to calculate MD5 of downloaded theme'
+                );
+            }
             
             // Compare MD5
             if ($current_md5 === $new_md5 && !empty($settings['last_md5']) && $settings['last_md5'] === $new_md5) {
@@ -242,23 +250,120 @@ class WP_GitHub_Theme_Rsync {
         
         foreach ($files as $file) {
             if (is_file($file)) {
-                $combined_content .= md5_file($file);
+                $relative_path = str_replace($theme_dir, '', $file);
+                $combined_content .= $relative_path . ':' . md5_file($file);
             }
         }
         
         return md5($combined_content);
     }
     
+    private function calculate_downloaded_theme_md5($zip_file) {
+        $temp_extract_dir = wp_tempnam() . '_md5_check';
+        
+        try {
+            // Create temporary extraction directory
+            if (!wp_mkdir_p($temp_extract_dir)) {
+                return false;
+            }
+            
+            // Extract zip
+            $zip = new ZipArchive();
+            if ($zip->open($zip_file) !== TRUE) {
+                $this->remove_directory($temp_extract_dir);
+                return false;
+            }
+            
+            $zip->extractTo($temp_extract_dir);
+            $zip->close();
+            
+            // Find theme directory
+            $theme_source_dir = $this->find_theme_directory($temp_extract_dir);
+            if (!$theme_source_dir) {
+                $this->remove_directory($temp_extract_dir);
+                return false;
+            }
+            
+            // Calculate MD5
+            $files = $this->get_all_theme_files($theme_source_dir);
+            $combined_content = '';
+            
+            foreach ($files as $file) {
+                if (is_file($file)) {
+                    $relative_path = str_replace($theme_source_dir, '', $file);
+                    $combined_content .= $relative_path . ':' . md5_file($file);
+                }
+            }
+            
+            $md5 = md5($combined_content);
+            
+            // Clean up
+            $this->remove_directory($temp_extract_dir);
+            
+            return $md5;
+            
+        } catch (Exception $e) {
+            $this->remove_directory($temp_extract_dir);
+            return false;
+        }
+    }
+    
     private function get_all_theme_files($dir) {
         $files = array();
-        $iterator = new RecursiveIteratorIterator(
-            new RecursiveDirectoryIterator($dir),
-            RecursiveIteratorIterator::LEAVES_ONLY
-        );
         
-        foreach ($iterator as $file) {
-            if ($file->isFile() && !in_array($file->getExtension(), array('log', 'tmp'))) {
-                $files[] = $file->getPathname();
+        if (!is_dir($dir)) {
+            return $files;
+        }
+        
+        try {
+            $iterator = new RecursiveIteratorIterator(
+                new RecursiveDirectoryIterator($dir, RecursiveDirectoryIterator::SKIP_DOTS),
+                RecursiveIteratorIterator::LEAVES_ONLY
+            );
+            
+            foreach ($iterator as $file) {
+                if ($file->isFile()) {
+                    $extension = strtolower($file->getExtension());
+                    $filename = $file->getFilename();
+                    
+                    // Skip temporary, log, and system files
+                    if (!in_array($extension, array('log', 'tmp', 'cache', 'bak')) && 
+                        !in_array($filename, array('.DS_Store', 'Thumbs.db', 'desktop.ini')) &&
+                        strpos($filename, '_backup_') === false) {
+                        $files[] = $file->getPathname();
+                    }
+                }
+            }
+            
+            // Sort files for consistent MD5 calculation
+            sort($files);
+            
+        } catch (Exception $e) {
+            // Fallback to simple directory scan if RecursiveIterator fails
+            $files = $this->get_files_simple($dir);
+        }
+        
+        return $files;
+    }
+    
+    private function get_files_simple($dir) {
+        $files = array();
+        $items = scandir($dir);
+        
+        foreach ($items as $item) {
+            if ($item === '.' || $item === '..') {
+                continue;
+            }
+            
+            $path = $dir . '/' . $item;
+            if (is_file($path)) {
+                $extension = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+                if (!in_array($extension, array('log', 'tmp', 'cache', 'bak')) && 
+                    !in_array($item, array('.DS_Store', 'Thumbs.db', 'desktop.ini'))) {
+                    $files[] = $path;
+                }
+            } elseif (is_dir($path)) {
+                $files = array_merge($files, $this->get_files_simple($path));
             }
         }
         
@@ -295,6 +400,7 @@ class WP_GitHub_Theme_Rsync {
         require_once(ABSPATH . 'wp-admin/includes/class-wp-filesystem-direct.php');
         
         $theme_dir = get_theme_root() . '/' . $theme_name;
+        $temp_extract_dir = wp_tempnam() . '_extract';
         
         // Create backup
         $backup_dir = $theme_dir . '_backup_' . date('YmdHis');
@@ -307,36 +413,59 @@ class WP_GitHub_Theme_Rsync {
             }
         }
         
-        // Extract zip
-        $zip = new ZipArchive();
-        if ($zip->open($zip_file) === TRUE) {
+        // Create temporary extraction directory
+        if (!wp_mkdir_p($temp_extract_dir)) {
+            return array(
+                'success' => false,
+                'message' => 'Failed to create temporary directory'
+            );
+        }
+        
+        try {
+            // Extract zip to temporary directory
+            $zip = new ZipArchive();
+            if ($zip->open($zip_file) !== TRUE) {
+                $this->remove_directory($temp_extract_dir);
+                return array(
+                    'success' => false,
+                    'message' => 'Failed to open zip file'
+                );
+            }
+            
+            $zip->extractTo($temp_extract_dir);
+            $zip->close();
+            
+            // Find the actual theme directory within the extracted content
+            $theme_source_dir = $this->find_theme_directory($temp_extract_dir);
+            
+            if (!$theme_source_dir) {
+                $this->remove_directory($temp_extract_dir);
+                return array(
+                    'success' => false,
+                    'message' => 'No valid theme directory found in the zip file. Expected structure: theme files (style.css, index.php) should be in the root or in a subdirectory.'
+                );
+            }
+            
             // Remove existing theme directory
             if (is_dir($theme_dir)) {
                 $this->remove_directory($theme_dir);
             }
             
-            // Extract to theme directory
-            $zip->extractTo(get_theme_root());
-            $zip->close();
-            
-            // Check if extraction created a subdirectory
-            $extracted_dirs = glob(get_theme_root() . '/*', GLOB_ONLYDIR);
-            $latest_dir = '';
-            $latest_time = 0;
-            
-            foreach ($extracted_dirs as $dir) {
-                if (filemtime($dir) > $latest_time && basename($dir) !== $theme_name && basename($dir) !== basename($backup_dir)) {
-                    $latest_time = filemtime($dir);
-                    $latest_dir = $dir;
+            // Copy theme files to final destination
+            if (!$this->copy_directory($theme_source_dir, $theme_dir)) {
+                // Restore backup if copy failed
+                if (is_dir($backup_dir)) {
+                    $this->copy_directory($backup_dir, $theme_dir);
                 }
+                $this->remove_directory($temp_extract_dir);
+                return array(
+                    'success' => false,
+                    'message' => 'Failed to copy theme files'
+                );
             }
             
-            // If extracted to a different directory name, rename it
-            if ($latest_dir && basename($latest_dir) !== $theme_name) {
-                rename($latest_dir, $theme_dir);
-            }
-            
-            // Remove backup if successful
+            // Clean up
+            $this->remove_directory($temp_extract_dir);
             $this->remove_directory($backup_dir);
             
             return array(
@@ -344,12 +473,72 @@ class WP_GitHub_Theme_Rsync {
                 'message' => 'Theme updated successfully'
             );
             
-        } else {
+        } catch (Exception $e) {
+            // Clean up on error
+            $this->remove_directory($temp_extract_dir);
+            
+            // Restore backup if it exists
+            if (is_dir($backup_dir) && !is_dir($theme_dir)) {
+                $this->copy_directory($backup_dir, $theme_dir);
+            }
+            
             return array(
                 'success' => false,
-                'message' => 'Failed to extract zip file'
+                'message' => 'Error during theme update: ' . $e->getMessage()
             );
         }
+    }
+    
+    private function find_theme_directory($extract_dir) {
+        // First, check if theme files are directly in the extract directory
+        if ($this->is_valid_theme_directory($extract_dir)) {
+            return $extract_dir;
+        }
+        
+        // If not, look for theme files in subdirectories
+        $subdirs = glob($extract_dir . '/*', GLOB_ONLYDIR);
+        
+        foreach ($subdirs as $subdir) {
+            if ($this->is_valid_theme_directory($subdir)) {
+                return $subdir;
+            }
+            
+            // Check one level deeper (for nested structures)
+            $nested_dirs = glob($subdir . '/*', GLOB_ONLYDIR);
+            foreach ($nested_dirs as $nested_dir) {
+                if ($this->is_valid_theme_directory($nested_dir)) {
+                    return $nested_dir;
+                }
+            }
+        }
+        
+        return false;
+    }
+    
+    private function is_valid_theme_directory($dir) {
+        if (!is_dir($dir)) {
+            return false;
+        }
+        
+        // Check for required WordPress theme files
+        $required_files = array('style.css', 'index.php');
+        
+        foreach ($required_files as $file) {
+            if (!file_exists($dir . '/' . $file)) {
+                return false;
+            }
+        }
+        
+        // Additional validation: check if style.css contains theme header
+        $style_css = $dir . '/style.css';
+        if (is_readable($style_css)) {
+            $style_content = file_get_contents($style_css, false, null, 0, 1024); // Read first 1KB
+            if (strpos($style_content, 'Theme Name:') === false) {
+                return false;
+            }
+        }
+        
+        return true;
     }
     
     private function copy_directory($src, $dst) {
