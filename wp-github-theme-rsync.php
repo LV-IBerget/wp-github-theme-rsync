@@ -1,10 +1,10 @@
 <?php
 /**
  * Plugin Name: WP GitHub Theme Rsync
- * Plugin URI: https://example.com
+ * Plugin URI: https://github.com/spencomeister/wp-github-theme-rsync
  * Description: Automatically sync WordPress theme from GitHub releases with MD5 comparison
- * Version: 1.0.0
- * Author: Your Name
+ * Version: 1.0.1
+ * Author: Cleva Spencer
  * License: GPL v2 or later
  */
 
