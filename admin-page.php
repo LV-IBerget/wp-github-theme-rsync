@@ -71,19 +71,43 @@
                     <label for="webhook_secret">Webhook secret</label>
                 </th>
                 <td>
-                    <input type="password"
+                    <input type="<?php echo !empty($webhook_secret_just_generated) ? 'text' : 'password'; ?>"
                            id="webhook_secret"
                            name="webhook_secret"
                            value="<?php echo esc_attr($settings['webhook_secret'] ?? ''); ?>"
                            class="large-text code"
                            autocomplete="off"
                            placeholder="Leave blank to keep current" />
+                    <?php if (!empty($webhook_secret_just_generated)) : ?>
+                    <button type="button" id="copy-webhook-secret" class="button" style="margin-left:6px;">Copy secret</button>
+                    <?php endif; ?>
                     <button type="submit" name="generate_webhook_secret" value="1" class="button" style="margin-left:6px;">
                         Generate new secret
                     </button>
                     <p class="description">
                         Used to authenticate <strong>just-in-time</strong> sync requests (REST endpoint below). Prefer a header over the query string so the secret does not appear in access logs.
                     </p>
+                    <?php if (!empty($webhook_secret_just_generated)) : ?>
+                    <p class="description"><strong>Copy this value now</strong>; once hidden, generate a new secret if you need to reveal it again.</p>
+                    <script>
+                    (function() {
+                        var copyBtn = document.getElementById('copy-webhook-secret');
+                        var secretInput = document.getElementById('webhook_secret');
+                        if (!copyBtn || !secretInput) return;
+                        copyBtn.addEventListener('click', function() {
+                            try {
+                                secretInput.select();
+                                secretInput.setSelectionRange(0, 99999);
+                                document.execCommand('copy');
+                                copyBtn.textContent = 'Copied';
+                                setTimeout(function() { copyBtn.textContent = 'Copy secret'; }, 1500);
+                            } catch (e) {
+                                copyBtn.textContent = 'Copy failed';
+                            }
+                        });
+                    })();
+                    </script>
+                    <?php endif; ?>
                 </td>
             </tr>
             

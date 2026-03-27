@@ -101,6 +101,7 @@ class WP_GitHub_Theme_Rsync {
     
     public function admin_page() {
         $settings = get_option('wp_github_theme_rsync_settings', array());
+        $webhook_secret_just_generated = false;
         
         if (
             (isset($_POST['submit']) || isset($_POST['generate_webhook_secret']))
@@ -120,6 +121,7 @@ class WP_GitHub_Theme_Rsync {
             );
             if (!empty($_POST['generate_webhook_secret'])) {
                 $settings['webhook_secret'] = bin2hex(random_bytes(32));
+                $webhook_secret_just_generated = true;
                 echo '<div class="notice notice-success"><p>New webhook secret generated. Copy it for your CI job (shown only until you save over this field).</p></div>';
             } elseif (isset($_POST['webhook_secret']) && $_POST['webhook_secret'] !== '') {
                 $settings['webhook_secret'] = sanitize_text_field(wp_unslash($_POST['webhook_secret']));
