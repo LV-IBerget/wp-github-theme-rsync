@@ -2,6 +2,7 @@
     <h1>GitHub Theme Sync Settings</h1>
     
     <form method="post" action="">
+        <?php wp_nonce_field('wp_github_theme_rsync_settings', 'wp_github_theme_rsync_settings_nonce'); ?>
         <table class="form-table">
             <tr>
                 <th scope="row">
@@ -62,6 +63,40 @@
                            name="auto_sync_enabled" 
                            <?php checked($settings['auto_sync_enabled'] ?? true); ?> />
                     <label for="auto_sync_enabled">Enable automatic daily synchronization via WP-Cron</label>
+                </td>
+            </tr>
+            
+            <tr>
+                <th scope="row">
+                    <label for="webhook_secret">Webhook secret</label>
+                </th>
+                <td>
+                    <input type="password"
+                           id="webhook_secret"
+                           name="webhook_secret"
+                           value="<?php echo esc_attr($settings['webhook_secret'] ?? ''); ?>"
+                           class="large-text code"
+                           autocomplete="off"
+                           placeholder="Leave blank to keep current" />
+                    <button type="submit" name="generate_webhook_secret" value="1" class="button" style="margin-left:6px;">
+                        Generate new secret
+                    </button>
+                    <p class="description">
+                        Used to authenticate <strong>just-in-time</strong> sync requests (REST endpoint below). Prefer a header over the query string so the secret does not appear in access logs.
+                    </p>
+                </td>
+            </tr>
+            
+            <tr>
+                <th scope="row">JIT sync URL</th>
+                <td>
+                    <code id="wpgtr-webhook-url" style="word-break:break-all;"><?php echo esc_url(rest_url('wp-github-theme-rsync/v1/sync')); ?></code>
+                    <p class="description">
+                        <code>POST</code> or <code>GET</code>. Send the same secret as header <code>X-WP-GitHub-Rsync-Secret</code>, or <code>Authorization: Bearer &lt;secret&gt;</code>, or <code>?secret=</code> (less secure). Returns HTTP <strong>200</strong> when sync succeeds (including “already up to date”), <strong>422</strong> when sync failed, <strong>403</strong> if the secret is wrong, <strong>503</strong> if no secret is configured. Append <code>&amp;debug=1</code> for the same technical details as manual sync. Daily cron does not run when “Auto Sync” is unchecked; use this URL from CI or cron on the server instead.
+                    </p>
+                    <p class="description"><strong>Example (GitHub Actions):</strong></p>
+                    <pre style="background:#f6f7f7;border:1px solid #c3c4c7;padding:10px;overflow:auto;font-size:12px;">curl -fsS -X POST "<?php echo esc_url(rest_url('wp-github-theme-rsync/v1/sync')); ?>" \
+  -H "X-WP-GitHub-Rsync-Secret: ${{ secrets.WP_THEME_SYNC_SECRET }}"</pre>
                 </td>
             </tr>
         </table>
@@ -131,7 +166,11 @@
             echo "WP-Cron Enabled: " . (defined('DISABLE_WP_CRON') && DISABLE_WP_CRON ? 'No' : 'Yes') . "\n";
             echo "Theme Root: " . get_theme_root() . "\n";
             echo "Current Settings:\n";
-            print_r($settings);
+            $dbg_settings = $settings;
+            if (!empty($dbg_settings['webhook_secret'])) {
+                $dbg_settings['webhook_secret'] = '[set, ' . strlen($dbg_settings['webhook_secret']) . ' chars]';
+            }
+            print_r($dbg_settings);
         ?></pre>
     </details>
 </div>

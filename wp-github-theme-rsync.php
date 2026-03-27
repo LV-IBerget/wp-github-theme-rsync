@@ -4,7 +4,7 @@
  * Plugin URI: https://github.com/spencomeister/wp-github-theme-rsync
  * Description: Automatically sync WordPress theme from GitHub releases with MD5 comparison
  * Author: Cleva Spencer
- * Version: 1.0.3
+ * Version: 1.0.4
  * License: GPL v2 or later
  */
 
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Define plugin constants
-define('WP_GITHUB_THEME_RSYNC_VERSION', '1.0.3');
+define('WP_GITHUB_THEME_RSYNC_VERSION', '1.0.4');
 define('WP_GITHUB_THEME_RSYNC_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('WP_GITHUB_THEME_RSYNC_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -36,8 +36,11 @@ class WP_GitHub_Theme_Rsync {
         // Ajax handlers
         add_action('wp_ajax_manual_theme_sync', array($this, 'manual_theme_sync'));
         
-        // WP-Cron setup
-        add_action('wp_github_theme_sync_cron', array($this, 'execute_theme_sync'));
+        // WP-Cron setup (respects auto_sync_enabled)
+        add_action('wp_github_theme_sync_cron', array($this, 'cron_theme_sync'));
+        
+        // External webhook (e.g. GitHub Actions after release artifact is ready)
+        add_action('rest_api_init', array($this, 'register_rest_routes'));
         
         // Enqueue admin scripts
         add_action('admin_enqueue_scripts', array($this, 'enqueue_admin_scripts'));
@@ -57,7 +60,8 @@ class WP_GitHub_Theme_Rsync {
             'auto_sync_enabled' => true,
             'last_sync' => '',
             'last_version' => '',
-            'last_md5' => ''
+            'last_md5' => '',
+            'webhook_secret' => ''
         ));
     }
     
@@ -98,21 +102,147 @@ class WP_GitHub_Theme_Rsync {
     public function admin_page() {
         $settings = get_option('wp_github_theme_rsync_settings', array());
         
-        if (isset($_POST['submit'])) {
+        if (
+            (isset($_POST['submit']) || isset($_POST['generate_webhook_secret']))
+            && isset($_POST['wp_github_theme_rsync_settings_nonce'])
+            && wp_verify_nonce(sanitize_text_field(wp_unslash($_POST['wp_github_theme_rsync_settings_nonce'])), 'wp_github_theme_rsync_settings')
+        ) {
+            $prev = $settings;
             $settings = array(
-                'github_repo' => sanitize_text_field($_POST['github_repo']),
-                'github_token' => sanitize_text_field($_POST['github_token']),
-                'target_theme' => sanitize_text_field($_POST['target_theme']),
+                'github_repo' => sanitize_text_field(wp_unslash($_POST['github_repo'] ?? '')),
+                'github_token' => sanitize_text_field(wp_unslash($_POST['github_token'] ?? '')),
+                'target_theme' => sanitize_text_field(wp_unslash($_POST['target_theme'] ?? '')),
                 'auto_sync_enabled' => isset($_POST['auto_sync_enabled']),
-                'last_sync' => $settings['last_sync'] ?? '',
-                'last_version' => $settings['last_version'] ?? '',
-                'last_md5' => $settings['last_md5'] ?? ''
+                'last_sync' => $prev['last_sync'] ?? '',
+                'last_version' => $prev['last_version'] ?? '',
+                'last_md5' => $prev['last_md5'] ?? '',
+                'webhook_secret' => $prev['webhook_secret'] ?? '',
             );
+            if (!empty($_POST['generate_webhook_secret'])) {
+                $settings['webhook_secret'] = bin2hex(random_bytes(32));
+                echo '<div class="notice notice-success"><p>New webhook secret generated. Copy it for your CI job (shown only until you save over this field).</p></div>';
+            } elseif (isset($_POST['webhook_secret']) && $_POST['webhook_secret'] !== '') {
+                $settings['webhook_secret'] = sanitize_text_field(wp_unslash($_POST['webhook_secret']));
+            }
             update_option('wp_github_theme_rsync_settings', $settings);
-            echo '<div class="notice notice-success"><p>Settings saved!</p></div>';
+            if (empty($_POST['generate_webhook_secret'])) {
+                echo '<div class="notice notice-success"><p>Settings saved!</p></div>';
+            }
         }
         
         include WP_GITHUB_THEME_RSYNC_PLUGIN_DIR . 'admin-page.php';
+    }
+    
+    /**
+     * Daily WP-Cron: skip when automatic sync is disabled (use webhook or manual sync instead).
+     */
+    public function cron_theme_sync() {
+        $settings = get_option('wp_github_theme_rsync_settings', array());
+        if (empty($settings['auto_sync_enabled'])) {
+            return;
+        }
+        $this->execute_theme_sync(false);
+    }
+    
+    public function register_rest_routes() {
+        register_rest_route(
+            'wp-github-theme-rsync/v1',
+            '/sync',
+            array(
+                'methods' => array('GET', 'POST'),
+                'callback' => array($this, 'rest_webhook_sync'),
+                'permission_callback' => '__return_true',
+                'args' => array(
+                    'secret' => array(
+                        'type' => 'string',
+                        'required' => false,
+                    ),
+                    'debug' => array(
+                        'type' => 'string',
+                        'required' => false,
+                    ),
+                ),
+            )
+        );
+    }
+    
+    /**
+     * @param WP_REST_Request $request Request.
+     * @return WP_REST_Response|WP_Error
+     */
+    public function rest_webhook_sync($request) {
+        $settings = get_option('wp_github_theme_rsync_settings', array());
+        $stored = isset($settings['webhook_secret']) ? (string) $settings['webhook_secret'] : '';
+        
+        if ($stored === '') {
+            return new WP_REST_Response(
+                array(
+                    'success' => false,
+                    'message' => 'Webhook secret is not configured. Open Settings → GitHub Theme Sync and generate a secret.',
+                ),
+                503
+            );
+        }
+        
+        $provided = $this->get_webhook_secret_from_request($request);
+        if ($provided === '' || !hash_equals($stored, $provided)) {
+            return new WP_REST_Response(
+                array(
+                    'success' => false,
+                    'message' => 'Forbidden',
+                ),
+                403
+            );
+        }
+        
+        $debug_param = $request->get_param('debug');
+        $include_debug = ($debug_param === '1' || $debug_param === 'true' || $debug_param === true);
+        
+        $result = $this->execute_theme_sync($include_debug);
+        
+        if (!$include_debug && isset($result['sync_debug'])) {
+            unset($result['sync_debug']);
+        }
+        
+        $status = empty($result['success']) ? 422 : 200;
+        
+        return new WP_REST_Response($result, $status);
+    }
+    
+    /**
+     * Reads secret from X-WP-GitHub-Rsync-Secret, Authorization: Bearer …, or ?secret= (query/body).
+     *
+     * @param WP_REST_Request $request Request.
+     */
+    private function get_webhook_secret_from_request($request) {
+        $h = $request->get_header('x_wp_github_rsync_secret');
+        if (is_string($h) && $h !== '') {
+            return $h;
+        }
+        if (empty($h) && !empty($_SERVER['HTTP_X_WP_GITHUB_RSYNC_SECRET'])) {
+            return sanitize_text_field(wp_unslash($_SERVER['HTTP_X_WP_GITHUB_RSYNC_SECRET']));
+        }
+        $auth = $request->get_header('authorization');
+        if (is_string($auth) && preg_match('/Bearer\s+(.+)/i', $auth, $m)) {
+            return trim($m[1]);
+        }
+        if (empty($auth) && !empty($_SERVER['HTTP_AUTHORIZATION'])) {
+            $raw = wp_unslash($_SERVER['HTTP_AUTHORIZATION']);
+            if (preg_match('/Bearer\s+(.+)/i', $raw, $m)) {
+                return trim($m[1]);
+            }
+        }
+        $p = $request->get_param('secret');
+        if ($p !== null && $p !== '') {
+            return is_string($p) ? $p : (string) $p;
+        }
+        if (is_object($request) && method_exists($request, 'get_json_params')) {
+            $json = $request->get_json_params();
+            if (is_array($json) && !empty($json['secret'])) {
+                return (string) $json['secret'];
+            }
+        }
+        return '';
     }
     
     public function manual_theme_sync() {
