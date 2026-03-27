@@ -100,7 +100,7 @@
     </table>
     
     <h2>Manual Sync</h2>
-    <p>Click the button below to manually check for updates and sync the theme:</p>
+    <p>Click the button below to manually check for updates and sync the theme. After each run, expand <strong>Technical details</strong> under the result for HTTP codes, asset name, ZIP checks, and extract folder listing—useful when something fails.</p>
     <button type="button" id="manual-sync-btn" class="button button-primary">
         <span class="sync-text">Check for Updates</span>
         <span class="sync-loading" style="display: none;">

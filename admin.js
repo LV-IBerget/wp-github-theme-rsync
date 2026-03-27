@@ -20,10 +20,18 @@ jQuery(document).ready(function($) {
             success: function(response) {
                 var messageClass = response.success ? 'notice-success' : 'notice-error';
                 var message = response.message || 'Unknown error occurred';
+                var html = '<div class="notice ' + messageClass + ' inline"><p>' + $('<div/>').text(message).html() + '</p></div>';
                 
-                $result.html('<div class="notice ' + messageClass + ' inline"><p>' + message + '</p></div>');
+                if (response.sync_debug && typeof response.sync_debug === 'object') {
+                    var dbg = JSON.stringify(response.sync_debug, null, 2);
+                    html += '<details class="wpgtr-sync-debug" style="margin-top:12px;"><summary style="cursor:pointer;">Technical details (for support / debugging)</summary>';
+                    html += '<pre style="margin-top:8px;max-height:320px;overflow:auto;background:#f6f7f7;border:1px solid #c3c4c7;padding:10px;font-size:12px;line-height:1.4;">';
+                    html += $('<div/>').text(dbg).html();
+                    html += '</pre></details>';
+                }
                 
-                // If sync was successful and not a "no update" case, reload the page to show updated info
+                $result.html(html);
+                
                 if (response.success && !response.no_update) {
                     setTimeout(function() {
                         location.reload();
@@ -31,7 +39,13 @@ jQuery(document).ready(function($) {
                 }
             },
             error: function(xhr, status, error) {
-                $result.html('<div class="notice notice-error inline"><p>AJAX Error: ' + error + '</p></div>');
+                var errHtml = '<div class="notice notice-error inline"><p>AJAX Error: ' + $('<div/>').text(error).html() + '</p></div>';
+                if (xhr.responseJSON && xhr.responseJSON.sync_debug) {
+                    errHtml += '<details style="margin-top:12px;"><summary style="cursor:pointer;">Technical details</summary><pre style="margin-top:8px;max-height:240px;overflow:auto;background:#f6f7f7;padding:10px;font-size:12px;">';
+                    errHtml += $('<div/>').text(JSON.stringify(xhr.responseJSON.sync_debug, null, 2)).html();
+                    errHtml += '</pre></details>';
+                }
+                $result.html(errHtml);
             },
             complete: function() {
                 // Reset button state
@@ -86,13 +100,4 @@ jQuery(document).ready(function($) {
         }
     });
     
-    // Auto-save functionality (optional)
-    var autoSaveTimeout;
-    $('input, select').on('change', function() {
-        clearTimeout(autoSaveTimeout);
-        autoSaveTimeout = setTimeout(function() {
-            // You could implement auto-save here if needed
-            console.log('Auto-save triggered');
-        }, 2000);
-    });
 });
